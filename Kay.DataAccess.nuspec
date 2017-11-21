@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package>
+	<metadata>
+		<id>Kay.DataAccess</id>
+		<version>0.0.1</version>
+		<title>Kay.DataAccess</title>
+		<authors>FortuneN</authors>
+		<owners>FortuneN</owners>
+		<licenseUrl>https://cdn.rawgit.com/FortuneN/Kay.DataAccess/bd9dc53e/LICENSE</licenseUrl>
+		<projectUrl>https://github.com/FortuneN/Kay.DataAccess</projectUrl>
+		<requireLicenseAcceptance>true</requireLicenseAcceptance>
+		<description>Neat data access stuff</description>
+		<copyright>Copyright 2017</copyright>
+		<tags>Linq to SQL, Data Access, Data Access Object</tags>
+	</metadata>
+	<files>
+		<file src="bin\debug\Kay.DataAccess.dll" target="lib"></file>
+	</files>
+</package>
