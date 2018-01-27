@@ -9,7 +9,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>Kay.DataAccess</RootNamespace>
     <AssemblyName>Kay.DataAccess</AssemblyName>
-    <TargetFrameworkVersion>v4.6.2</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <TargetFrameworkProfile />
   </PropertyGroup>
@@ -21,6 +21,7 @@
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
@@ -29,6 +30,7 @@
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
@@ -45,6 +47,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="IConnectionStringReader.cs" />
+    <Compile Include="Helper.cs" />
     <Compile Include="LinqToSqlDao.cs" />
     <Compile Include="LinqToSqlQuery.cs" />
     <Compile Include="LinqToSqlTableUtility.cs" />
@@ -54,14 +57,8 @@
     <Compile Include="ResultSet.cs" />
     <Compile Include="TableUtility.cs" />
   </ItemGroup>
-  <ItemGroup>
-    <None Include="Kay.DataAccess.nuspec">
-      <SubType>Designer</SubType>
-    </None>
-  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
-    <PostBuildEvent>"$(ProjectDir)nuget" pack "$(ProjectDir)Kay.DataAccess.nuspec"
-</PostBuildEvent>
+    <PostBuildEvent>"$(ProjectDir)nuget" pack "$(ProjectDir)Kay.DataAccess.csproj" -IncludeReferencedProjects</PostBuildEvent>
   </PropertyGroup>
 </Project>

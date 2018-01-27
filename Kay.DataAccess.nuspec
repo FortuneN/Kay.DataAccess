@@ -2,11 +2,11 @@
 <package>
 	<metadata>
 		<id>Kay.DataAccess</id>
-		<version>0.0.1</version>
+		<version>0.0.10</version>
 		<title>Kay.DataAccess</title>
 		<authors>FortuneN</authors>
 		<owners>FortuneN</owners>
-		<licenseUrl>https://cdn.rawgit.com/FortuneN/Kay.DataAccess/bd9dc53e/LICENSE</licenseUrl>
+		<licenseUrl>https://github.com/FortuneN/Kay.DataAccess/blob/master/LICENSE</licenseUrl>
 		<projectUrl>https://github.com/FortuneN/Kay.DataAccess</projectUrl>
 		<requireLicenseAcceptance>true</requireLicenseAcceptance>
 		<description>Neat data access stuff</description>

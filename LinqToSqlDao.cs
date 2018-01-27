@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Data;
 using System.Data.Linq;
 using System.Data.Linq.Mapping;
 using System.Linq;
@@ -15,9 +16,13 @@ namespace Kay.DataAccess
 		//Static
 
 		private static IConnectionStringReader connectionStringReader = new TConnectionStringReader();
+
 		private static Dictionary<Type, IEnumerable<PropertyInfo>> entityPrimaryKeyColumnProperties = new Dictionary<Type, IEnumerable<PropertyInfo>>();
+
 		private static Dictionary<Type, string> entityTableName = new Dictionary<Type, string>();
+
 		private static Dictionary<Type, string> entitySelectSql = new Dictionary<Type, string>();
+
 		private static Dictionary<string, object> GetCompositePrimaryKey(TEntity entity)
 		{
 			FailIf(entity == null, "Parameter (entity) cannot be null");
@@ -33,6 +38,35 @@ namespace Kay.DataAccess
 			FailIf(primaryKeyNamesAndValues.Count() == 0, "Class '" + typeof(TEntity).FullName + "' does not have a primary key defined. A primary key is required");
 
 			return primaryKeyNamesAndValues;
+		}
+
+		private static TDataContext StaticNewDataContext()
+		{
+			var dataContext = new TDataContext();
+			dataContext.Connection.ConnectionString = connectionStringReader.GetConnectionString();
+			if (dataContext.Connection.State != ConnectionState.Open) dataContext.Connection.Open();
+			dataContext.Transaction = dataContext.Connection.BeginTransaction();
+			return dataContext;
+		}
+
+		private static TResult DataContextScope<TResult>(bool submitChanges, TDataContext dataContext, Func<TDataContext, TResult> logic)
+		{
+			var dc = dataContext ?? StaticNewDataContext();
+
+			try
+			{
+				var result = logic.Invoke(dc);
+				if (submitChanges) dc.SubmitChanges();
+				return result;
+			}
+			finally
+			{
+				if (dataContext == null)
+				{
+					dc.Commit();
+					dc.Dispose();
+				}
+			}
 		}
 
 		static LinqToSqlDao()
@@ -53,63 +87,54 @@ namespace Kay.DataAccess
 				entitySelectSql[entityType] = "SELECT * FROM " + entityTableName[entityType] + " WHERE " + string.Join(" AND ", typeWhereSqlList.ToArray());
 			}
 		}
+		
+		//Utils
+
+		public TDataContext NewDataContext() => StaticNewDataContext();
+		
+		public delegate IQueryable<TEntity> QueryDelegate(IQueryable<TEntity> query);
+		
+		public delegate LoadOptions LoadOptionsDelegate(LoadOptions options);
 
 		//Add
-
-		public TEntity Add(TEntity entity)
+		
+		public TEntity Add(TEntity entity, TDataContext dataContext = null)
 		{
 			FailIf(entity == null || entity == DBNull.Value, "Parameter (entity) cannot be null");
 
-			using (var entityDataContext = NewDataContext())
+			return DataContextScope(true, dataContext, dc =>
 			{
-				//add
-
-				var entityTable = entityDataContext.GetTable<TEntity>();
-				entityTable.InsertOnSubmit(entity);
-
-				//commit
-
-				entityDataContext.SubmitChanges();
-
-				//return
-
+				dc.GetTable<TEntity>().InsertOnSubmit(entity);
 				return entity;
-			}
+			});
 		}
 
-		public List<TEntity> AddAll(IEnumerable<TEntity> entities)
+		public List<TEntity> AddAll(IEnumerable<TEntity> entities, TDataContext dataContext = null)
 		{
 			FailIf(entities == null || entities.Count() == 0, "Parameter (entities) cannot be null or empty");
 
-			using (var transaction = new TransactionScope())
+			return DataContextScope(true, dataContext, dc =>
 			{
 				var result = new List<TEntity>();
-
-				foreach (var entity in entities)
-				{
-					result.Add(Add(entity));
-				}
-
-				transaction.Complete();
-
+				foreach (var entity in entities) result.Add(Add(entity, dc));
 				return result;
-			}
+			});
 		}
 
 		//Update
 
-		public TEntity Update(TEntity entity, IEnumerable<string> properties = null)
+		public TEntity Update(TEntity entity, IEnumerable<string> properties = null, TDataContext dataContext = null)
 		{
 			FailIf(entity == null || entity == DBNull.Value, "Parameter (entity) cannot be null");
 
-			using (var entityDataContext = NewDataContext())
+			return DataContextScope(true, dataContext, dc =>
 			{
 				var compositePrimaryKey = GetCompositePrimaryKey(entity);
-				var databaseEntity = entityDataContext.ExecuteQuery<TEntity>(entitySelectSql[typeof(TEntity)], compositePrimaryKey.Values.ToArray()).SingleOrDefault();
+				var databaseEntity = dc.ExecuteQuery<TEntity>(entitySelectSql[typeof(TEntity)], compositePrimaryKey.Values.ToArray()).SingleOrDefault();
 
 				//update (scalar values only)
 
-				var entityDataContextNamespace = entityDataContext.GetType().Namespace;
+				var entityDataContextNamespace = dc.GetType().Namespace;
 
 				foreach (PropertyDescriptor entityPropertyDescriptor in TypeDescriptor.GetProperties(entity))
 				{
@@ -128,427 +153,193 @@ namespace Kay.DataAccess
 					var entityPropertyValue = entityPropertyDescriptor.GetValue(entity);
 					entityPropertyDescriptor.SetValue(databaseEntity, entityPropertyValue);
 				}
-
-				//commit
-
-				entityDataContext.SubmitChanges();
-
+				
 				//return
 
 				return databaseEntity;
-			}
+			});
 		}
 
-		public List<TEntity> UpdateAll(IEnumerable<TEntity> entities)
-		{
-			FailIf(entities == null || entities.Count() == 0, "Parameter (entities) cannot be null or empty");
-
-			using (var transaction = new TransactionScope())
-			{
-				var result = new List<TEntity>();
-
-				foreach (var entity in entities)
-				{
-					result.Add(Update(entity));
-				}
-
-				transaction.Complete();
-
-				return result;
-			}
-		}
-
-		//Delete
-
-		public TEntity DeleteByPrimaryKey(Dictionary<string, object> compositePrimaryKey)
-		{
-			FailIf(compositePrimaryKey == null || compositePrimaryKey.Count() == 0, "Parameter (compositePrimaryKey) cannot be null or empty");
-
-			using (var entityDataContext = NewDataContext())
-			{
-				var persistedEntity = entityDataContext.ExecuteQuery<TEntity>(entitySelectSql[typeof(TEntity)], compositePrimaryKey.Values.ToArray()).SingleOrDefault();
-
-				//delete and commit
-
-				entityDataContext.GetTable<TEntity>().DeleteOnSubmit(persistedEntity);
-				entityDataContext.SubmitChanges();
-
-				//return
-
-				return persistedEntity;
-			}
-		}
-
-		public TEntity DeleteByPrimaryKey(object primaryKey)
-		{
-			FailIf(primaryKey == null || primaryKey == DBNull.Value, "Parameter (primaryKey) cannot be null");
-
-			var primaryKeyColumnProperties = entityPrimaryKeyColumnProperties[typeof(TEntity)];
-			var primaryKeyName = primaryKeyColumnProperties.Select(x => x.Name).SingleOrDefault();
-
-			var compositePrimaryKey = new Dictionary<string, object>();
-			compositePrimaryKey.Add(primaryKeyName, primaryKey);
-
-			return DeleteByPrimaryKey(compositePrimaryKey);
-		}
-
-		public TEntity Delete(TEntity entity)
-		{
-			FailIf(entity == null || entity == DBNull.Value, "Parameter (entity) cannot be null");
-
-			var compositePrimaryKey = GetCompositePrimaryKey(entity);
-			return DeleteByPrimaryKey(compositePrimaryKey);
-		}
-
-		public IEnumerable<TEntity> DeleteAll(IEnumerable<TEntity> entities)
+		public List<TEntity> UpdateAll(IEnumerable<TEntity> entities, TDataContext dataContext = null)
 		{
 			FailIf(entities == null, "Parameter (entities) cannot be null or empty");
 
-			using (var transaction = new TransactionScope())
+			return DataContextScope(true, dataContext, dc =>
 			{
 				var result = new List<TEntity>();
-
-				foreach (var entity in entities)
-				{
-					result.Add(Delete(entity));
-				}
-
-				transaction.Complete();
-
+				foreach (var entity in entities) result.Add(Update(entity, null, dc));
 				return result;
-			}
+			});
 		}
-        public IEnumerable<TEntity> DeleteWhere(Expression<Func<TEntity, bool>> where)
-        {
-            var entityDataContext = NewDataContext();
-            var entityQueryable = GetQueryableWhere(where, null, entityDataContext);
-            return DeleteAll(entityQueryable.ToList());
-        }
-        
-		//GetByPrimaryKey
+		
+		//public IEnumerable<TEntity> UpdateWhere(Expression<Func<TEntity, bool>> where, Expression<Func<TEntity, TEntity>> update = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => UpdateAll(QueryableWhere(where, null, dc).ToList(), dc));
 
-		public TEntity GetByPrimaryKey(Dictionary<string, object> compositePrimaryKey)
+		//public IEnumerable<TEntity> UpdateQuery(QueryDelegate query = null, Expression<Func<TEntity, TEntity>> update = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => UpdateAll(QueryableQuery(query, null, dc).ToList(), dc));
+		
+		//Delete
+
+		public TEntity DeleteByPrimaryKey(Dictionary<string, object> compositePrimaryKey, TDataContext dataContext = null)
 		{
 			FailIf(compositePrimaryKey == null || compositePrimaryKey.Count() == 0, "Parameter (compositePrimaryKey) cannot be null or empty");
 
-			using (var entityDataContext = NewDataContext())
+			return DataContextScope(true, dataContext, dc =>
 			{
-				return entityDataContext.ExecuteQuery<TEntity>(entitySelectSql[typeof(TEntity)], compositePrimaryKey.Values.ToArray()).SingleOrDefault();
-			}
+				var persistedEntity = dc.ExecuteQuery<TEntity>(entitySelectSql[typeof(TEntity)], compositePrimaryKey.Values.ToArray()).SingleOrDefault();
+				dc.GetTable<TEntity>().DeleteOnSubmit(persistedEntity);
+				return persistedEntity;
+			});
 		}
 
-		public TEntity GetByPrimaryKey(object primaryKey)
+		public TEntity DeleteByPrimaryKey(object primaryKey, TDataContext dataContext = null)
 		{
 			FailIf(primaryKey == null || primaryKey == DBNull.Value, "Parameter (primaryKey) cannot be null");
 
-			var primaryKeyColumnProperties = entityPrimaryKeyColumnProperties[typeof(TEntity)];
-			var primaryKeyName = primaryKeyColumnProperties.Select(x => x.Name).SingleOrDefault();
-
-			var compositePrimaryKey = new Dictionary<string, object>();
-			compositePrimaryKey.Add(primaryKeyName, primaryKey);
-
-			return GetByPrimaryKey(compositePrimaryKey);
+			return DataContextScope(true, dataContext, dc =>
+			{
+				var primaryKeyColumnProperties = entityPrimaryKeyColumnProperties[typeof(TEntity)];
+				var primaryKeyName = primaryKeyColumnProperties.Select(x => x.Name).SingleOrDefault();
+				var compositePrimaryKey = new Dictionary<string, object> { { primaryKeyName, primaryKey } };
+				return DeleteByPrimaryKey(compositePrimaryKey, dc);
+			});
 		}
 
-		//Util
-
-		public TDataContext NewDataContext()
+		public TEntity Delete(TEntity entity, TDataContext dataContext = null)
 		{
-			var dataContext = new TDataContext();
-			dataContext.Connection.ConnectionString = connectionStringReader.GetConnectionString();
-			return dataContext;
+			FailIf(entity == null || entity == DBNull.Value, "Parameter (entity) cannot be null");
+
+			return DataContextScope(true, dataContext, dc => DeleteByPrimaryKey(GetCompositePrimaryKey(entity), dc));
 		}
-		public delegate IQueryable<TEntity> QueryDelegate(IQueryable<TEntity> query);
-		public delegate LoadOptions LoadOptionsDelegate(LoadOptions loadOptions);
+
+		public IEnumerable<TEntity> DeleteAll(IEnumerable<TEntity> entities, TDataContext dataContext = null)
+		{
+			FailIf(entities == null, "Parameter (entities) cannot be null");
+
+			return DataContextScope(true, dataContext, dc =>
+			{
+				var result = new List<TEntity>();
+				foreach (var entity in entities) result.Add(Delete(entity, dc));
+				return result;
+			});
+		}
+
+		public IEnumerable<TEntity> DeleteWhere(Expression<Func<TEntity, bool>> where, TDataContext dataContext = null) => DataContextScope(true, dataContext, dc => DeleteAll(QueryableWhere(where, null, dc).ToList(), dc));
 		
-		private static IQueryable<TEntity> GetQueryableQuery(QueryDelegate query, LoadOptionsDelegate loadOptions, TDataContext entityDataContext)
-		{
-			var entityQueryable = entityDataContext.GetTable<TEntity>().AsQueryable<TEntity>();
-			var entityLoadOptions = new LoadOptions();
+		public IEnumerable<TEntity> DeleteQuery(QueryDelegate query = null, TDataContext dataContext = null) => DataContextScope(true, dataContext, dc => DeleteAll(QueryableQuery(query, null, dc).ToList(), dc));
 
-			if (query != null)
+		//GetByPrimaryKey
+
+		public TEntity GetByPrimaryKey(Dictionary<string, object> compositePrimaryKey, TDataContext dataContext = null)
+		{
+			FailIf(compositePrimaryKey == null || compositePrimaryKey.Count() == 0, "Parameter (compositePrimaryKey) cannot be null or empty");
+
+			return DataContextScope(true, dataContext, dc => dc.ExecuteQuery<TEntity>(entitySelectSql[typeof(TEntity)], compositePrimaryKey.Values.ToArray()).SingleOrDefault());
+		}
+
+		public TEntity GetByPrimaryKey(object primaryKey, TDataContext dataContext = null)
+		{
+			FailIf(primaryKey == null || primaryKey == DBNull.Value, "Parameter (primaryKey) cannot be null or DBNull");
+
+			return DataContextScope(true, dataContext, dc =>
 			{
-				entityQueryable = query(entityQueryable);
-			}
-
-			if (loadOptions != null)
-			{
-				entityDataContext.LoadOptions = loadOptions(entityLoadOptions).Options;
-			}
-
-			return entityQueryable;
+				var primaryKeyColumnProperties = entityPrimaryKeyColumnProperties[typeof(TEntity)];
+				var primaryKeyName = primaryKeyColumnProperties.Select(x => x.Name).SingleOrDefault();
+				var compositePrimaryKey = new Dictionary<string, object> { { primaryKeyName, primaryKey } };
+				return GetByPrimaryKey(compositePrimaryKey, dc);
+			});
 		}
-		private static IQueryable<TEntity> GetQueryableWhere(Expression<Func<TEntity, bool>> where, LoadOptionsDelegate loadOptions, TDataContext entityDataContext)
+		
+		//Queryable
+
+		public IQueryable<TEntity> Queryable(LoadOptionsDelegate options = null, TDataContext dataContext = null)
 		{
-			var entityQueryable = entityDataContext.GetTable<TEntity>().AsQueryable<TEntity>();
-			var entityLoadOptions = new LoadOptions();
-
-			if (where != null)
-			{
-				entityQueryable = entityQueryable.Where(where);
-			}
-
-			if (loadOptions != null)
-			{
-				entityDataContext.LoadOptions = loadOptions(entityLoadOptions).Options;
-			}
-
-			return entityQueryable;
+			FailIf(dataContext == null, "Parameter (dataContext) cannot be null");
+			var queryable = dataContext.GetTable<TEntity>().AsQueryable();
+			if (options != null) dataContext.LoadOptions = options(new LoadOptions()).Options;
+			return queryable;
 		}
 
-		public IQueryable<TEntity> Query(QueryDelegate query = null, LoadOptionsDelegate loadOptions = null)
+		public IQueryable<TEntity> QueryableQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null)
 		{
-			var entityDataContext = NewDataContext();
-			var entityQueryable = GetQueryableQuery(query, loadOptions, entityDataContext);
-			return entityQueryable;
-		}
-		public IQueryable<TEntity> Where(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate loadOptions = null)
-		{
-			var entityDataContext = NewDataContext();
-			var entityQueryable = GetQueryableWhere(where, loadOptions, entityDataContext);
-			return entityQueryable;
+			FailIf(dataContext == null, "Parameter (dataContext) cannot be null");
+			var queryable = Queryable(options, dataContext);
+			return query != null ? query(queryable) : queryable;
 		}
 
-		//Get
-
-		public ResultSet<TEntity> Get()
+		public IQueryable<TEntity> QueryableWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null)
 		{
-			return Get(null, null, null, null);
+			FailIf(dataContext == null, "Parameter (dataContext) cannot be null");
+			var queryable = Queryable(options, dataContext);
+			return where != null ? queryable.Where(where) : queryable;
 		}
 
-		public ResultSet<TEntity> Get(int? pageSize, int? pageIndex)
-		{
-			return Get(null, null, pageSize, pageIndex);
-		}
+		//ResultSet
+		
+		public ResultSet<TEntity> ResultSet(LoadOptionsDelegate options = null, int? pageSize = null, int? pageIndex = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => new ResultSet<TEntity>(Queryable(options, dc), pageSize, pageIndex));
+		
+		public ResultSet<TEntity> ResultSetQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, int? pageSize = null, int? pageIndex = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => new ResultSet<TEntity>(QueryableQuery(query, options, dc), pageSize, pageIndex));
 
-		public ResultSet<TEntity> Get(QueryDelegate query)
-		{
-			return Get(query, null, null, null);
-		}
-
-		public ResultSet<TEntity> Get(QueryDelegate query, LoadOptionsDelegate loadOptions)
-		{
-			return Get(query, loadOptions, null, null);
-		}
-
-		public ResultSet<TEntity> Get(QueryDelegate query, int? pageSize, int? pageIndex)
-		{
-			return Get(query, null, pageSize, pageIndex);
-		}
-
-		public ResultSet<TEntity> Get(QueryDelegate query, LoadOptionsDelegate loadOptions, int? pageSize, int? pageIndex)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableQuery(query, loadOptions, entityDataContext);
-				return new ResultSet<TEntity>(entityQueryable, pageSize, pageIndex);
-			}
-		}
-
-		public ResultSet<TEntity> GetWhere()
-		{
-			return GetWhere(null, null, null, null);
-		}
-
-		public ResultSet<TEntity> GetWhere(int? pageSize, int? pageIndex)
-		{
-			return GetWhere(null, null, pageSize, pageIndex);
-		}
-
-		public ResultSet<TEntity> GetWhere(Expression<Func<TEntity, bool>> where)
-		{
-			return GetWhere(where, null, null, null);
-		}
-
-		public ResultSet<TEntity> GetWhere(Expression<Func<TEntity, bool>> where, LoadOptionsDelegate loadOptions)
-		{
-			return GetWhere(where, loadOptions, null, null);
-		}
-
-		public ResultSet<TEntity> GetWhere(Expression<Func<TEntity, bool>> where, int? pageSize, int? pageIndex)
-		{
-			return GetWhere(where, null, pageSize, pageIndex);
-		}
-
-		public ResultSet<TEntity> GetWhere(Expression<Func<TEntity, bool>> where, LoadOptionsDelegate loadOptions, int? pageSize, int? pageIndex)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableWhere(where, loadOptions, entityDataContext);
-				return new ResultSet<TEntity>(entityQueryable, pageSize, pageIndex);
-			}
-		}
+		public ResultSet<TEntity> ResultSetWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, int? pageSize = null, int? pageIndex = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => new ResultSet<TEntity>(QueryableWhere(where, options, dc), pageSize, pageIndex));
 
 		//SingleOrDefault
+		
+		public TEntity SingleOrDefault(LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => Queryable(options, dc).SingleOrDefault());
+		
+		public TEntity SingleOrDefaultQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableQuery(query, options, dc).SingleOrDefault());
 
-		public TEntity SingleOrDefault()
-		{
-			return SingleOrDefault(null, null);
-		}
-
-		public TEntity SingleOrDefault(QueryDelegate query)
-		{
-			return SingleOrDefault(query, null);
-		}
-
-		public TEntity SingleOrDefault(QueryDelegate query, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableQuery(query, loadOptions, entityDataContext);
-				return entityQueryable.SingleOrDefault();
-			}
-		}
-
-		public TEntity SingleOrDefaultWhere()
-		{
-			return SingleOrDefaultWhere(null, null);
-		}
-
-		public TEntity SingleOrDefaultWhere(Expression<Func<TEntity, bool>> where)
-		{
-			return SingleOrDefaultWhere(where, null);
-		}
-
-		public TEntity SingleOrDefaultWhere(Expression<Func<TEntity, bool>> where, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableWhere(where, loadOptions, entityDataContext);
-				return entityQueryable.SingleOrDefault();
-			}
-		}
+		public TEntity SingleOrDefaultWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableWhere(where, options, dc).SingleOrDefault());
 
 		//FirstOrDefault
+		
+		public TEntity FirstOrDefault(LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => Queryable(options, dc).FirstOrDefault());
+		
+		public TEntity FirstOrDefaultQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableQuery(query, options, dc).FirstOrDefault());
+		
+		public TEntity FirstOrDefaultWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableWhere(where, options, dc).FirstOrDefault());
 
-		public TEntity FirstOrDefault()
-		{
-			return FirstOrDefault(null, null);
-		}
+		//LastOrDefault
+		
+		public TEntity LastOrDefault(LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => Queryable(options, dc).LastOrDefault());
+		
+		public TEntity LastOrDefaultQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableQuery(query, options, dc).LastOrDefault());
 
-		public TEntity FirstOrDefault(QueryDelegate query)
-		{
-			return FirstOrDefault(query, null);
-		}
-
-		public TEntity FirstOrDefault(QueryDelegate query, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableQuery(query, loadOptions, entityDataContext);
-				return entityQueryable.FirstOrDefault();
-			}
-		}
-
-		public TEntity FirstOrDefaultWhere()
-		{
-			return FirstOrDefaultWhere(null, null);
-		}
-
-		public TEntity FirstOrDefaultWhere(Expression<Func<TEntity, bool>> where)
-		{
-			return FirstOrDefaultWhere(where, null);
-		}
-
-		public TEntity FirstOrDefaultWhere(Expression<Func<TEntity, bool>> where, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableWhere(where, loadOptions, entityDataContext);
-				return entityQueryable.FirstOrDefault();
-			}
-		}
+		public TEntity LastOrDefaultWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableWhere(where, options, dc).LastOrDefault());
 
 		//Any
-
-		public bool Any()
-		{
-			return Any(null, null);
-		}
-
-		public bool Any(QueryDelegate query)
-		{
-			return Any(query, null);
-		}
-
-		public bool Any(QueryDelegate query, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableQuery(query, loadOptions, entityDataContext);
-				return entityQueryable.Any();
-			}
-		}
-
-		public bool AnyWhere()
-		{
-			return AnyWhere(null, null);
-		}
-
-		public bool AnyWhere(Expression<Func<TEntity, bool>> where)
-		{
-			return AnyWhere(where, null);
-		}
-
-		public bool AnyWhere(Expression<Func<TEntity, bool>> where, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableWhere(where, loadOptions, entityDataContext);
-				return entityQueryable.Any();
-			}
-		}
 		
+		public bool Any(TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => Queryable(null, dc).Any());
+		
+		public bool AnyQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableQuery(query, options, dc).Any());
+
+		public bool AnyWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableWhere(where, options, dc).Any());
+
 		//Count
+		
+		public long Count(TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => Queryable(null, dc).LongCount());
+		
+		public long CountQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableQuery(query, options, dc).LongCount());
 
-		public long Count()
-		{
-			return Count(null, null);
-		}
+		public long CountWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableWhere(where, options, dc).LongCount());
 
-		public long Count(QueryDelegate query)
-		{
-			return Count(query, null);
-		}
+		//Array
+		
+		public TEntity[] Array(LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => Queryable(options, dc).ToArray());
+		
+		public TEntity[] ArrayQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableQuery(query, options, dc).ToArray());
 
-		public long Count(QueryDelegate query, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableQuery(query, loadOptions, entityDataContext);
-				return entityQueryable.LongCount();
-			}
-		}
+		public TEntity[] ArrayWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableWhere(where, options, dc).ToArray());
 
-		public long CountWhere()
-		{
-			return CountWhere(null, null);
-		}
+		//List
+		
+		public List<TEntity> List(LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => Queryable(options, dc).ToList());
+		
+		public List<TEntity> ListQuery(QueryDelegate query = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableQuery(query, options, dc).ToList());
 
-		public long CountWhere(Expression<Func<TEntity, bool>> where)
-		{
-			return CountWhere(where, null);
-		}
-
-		public long CountWhere(Expression<Func<TEntity, bool>> where, LoadOptionsDelegate loadOptions)
-		{
-			using (var entityDataContext = NewDataContext())
-			{
-				var entityQueryable = GetQueryableWhere(where, loadOptions, entityDataContext);
-				return entityQueryable.LongCount();
-			}
-		}
+		public List<TEntity> ListWhere(Expression<Func<TEntity, bool>> where = null, LoadOptionsDelegate options = null, TDataContext dataContext = null) => DataContextScope(false, dataContext, dc => QueryableWhere(where, options, dc).ToList());
 
 		//Assert
+		
+		private static void Fail(string message) => throw new ApplicationException(message);
 
-		private static void Fail(string message)
-		{
-			throw new ApplicationException(message);
-		}
-
-		private static void FailIf(bool isTrue, string messegeIfTrue)
-		{
-			if (isTrue) Fail(messegeIfTrue);
-		}
+		private static void FailIf(bool isTrue, string messageIfTrue) { if (isTrue) Fail(messageIfTrue); }
 	}
 }
