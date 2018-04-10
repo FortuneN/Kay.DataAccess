@@ -14,5 +14,11 @@ namespace Kay.DataAccess
 		{
 			dc?.Transaction?.Commit();
 		}
+
+		public static void CommitAndDispose<TDataContext>(this TDataContext dc) where TDataContext : DataContext, new()
+		{
+			dc?.Transaction?.Commit();
+			dc?.Dispose();
+		}
 	}
 }

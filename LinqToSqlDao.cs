@@ -82,13 +82,15 @@ namespace Kay.DataAccess
 				//entitySelectSql
 
 				var typeWhereSqlList = new List<string>();
-				foreach (var primaryKeyProperty in entityPrimaryKeyColumnProperties[entityType]) typeWhereSqlList.Add(primaryKeyProperty.Name + " = {" + typeWhereSqlList.Count + "}");
-				entityTableName[entityType] = ((TableAttribute)entityType.GetCustomAttributes(typeof(TableAttribute), true).FirstOrDefault()).Name;
-				entitySelectSql[entityType] = "SELECT * FROM " + entityTableName[entityType] + " WHERE " + string.Join(" AND ", typeWhereSqlList.ToArray());
+				foreach (var primaryKeyProperty in entityPrimaryKeyColumnProperties[entityType]) typeWhereSqlList.Add("[" + primaryKeyProperty.Name + "] = {" + typeWhereSqlList.Count + "}");
+				entityTableName[entityType] = ((TableAttribute)entityType.GetCustomAttributes(typeof(TableAttribute), true).FirstOrDefault()).Name.Split('.').Last();
+				entitySelectSql[entityType] = "SELECT * FROM [" + entityTableName[entityType] + "] WHERE " + string.Join(" AND ", typeWhereSqlList.ToArray());
 			}
 		}
 		
 		//Utils
+
+		public string[] AuditFieldsForInsert { set; get; }
 
 		public TDataContext NewDataContext() => StaticNewDataContext();
 		
@@ -138,19 +140,30 @@ namespace Kay.DataAccess
 
 				foreach (PropertyDescriptor entityPropertyDescriptor in TypeDescriptor.GetProperties(entity))
 				{
-					var entityPropertyDescriptorTypeFullName = entityPropertyDescriptor.PropertyType.FullName;
-
-					if (entityPropertyDescriptor.PropertyType.Namespace == entityDataContextNamespace || entityPropertyDescriptorTypeFullName.Contains("System.Data.Linq.EntityRef") || entityPropertyDescriptorTypeFullName.Contains("System.Data.Linq.EntitySet") || compositePrimaryKey.Keys.Contains(entityPropertyDescriptor.Name))
-					{
-						continue;
-					}
-
-					if (properties != null && !properties.Contains(entityPropertyDescriptor.Name))
-					{
-						continue;
-					}
-
+					var entityPropertyTypeName = entityPropertyDescriptor.PropertyType.FullName;
 					var entityPropertyValue = entityPropertyDescriptor.GetValue(entity);
+
+					if (entityPropertyDescriptor.PropertyType.Namespace == entityDataContextNamespace || entityPropertyTypeName.Contains("System.Data.Linq.EntityRef") || entityPropertyTypeName.Contains("System.Data.Linq.EntitySet") || compositePrimaryKey.Keys.Contains(entityPropertyDescriptor.Name))
+					{
+						continue;
+					}
+
+					if (properties != null && !properties.Any(x => string.Equals(x, entityPropertyDescriptor.Name, StringComparison.OrdinalIgnoreCase)))
+					{
+						continue;
+					}
+
+					if (AuditFieldsForInsert != null && AuditFieldsForInsert.Any(x => string.Equals(x, entityPropertyDescriptor.Name, StringComparison.OrdinalIgnoreCase)))
+					{
+						continue;
+					}
+
+					//TODO:The generic implementation of this is done (AuditFieldsForInsert check above). Retain this for Praxis use for now : 10 April 2018
+					if (entityPropertyDescriptor.Name.Equals("DateCreated", StringComparison.OrdinalIgnoreCase) || entityPropertyDescriptor.Name.Equals("UserCreated", StringComparison.OrdinalIgnoreCase))
+					{
+						continue;
+					}
+
 					entityPropertyDescriptor.SetValue(databaseEntity, entityPropertyValue);
 				}
 				

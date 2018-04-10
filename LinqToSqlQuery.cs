@@ -20,14 +20,15 @@ namespace Kay.DataAccess
 			return dataContext;
 		}
 
-		private static TResult DataContextScope<TResult>(bool submitChanges, TDataContext dataContext, Func<TDataContext, TResult> logic)
+		private static TResult DataContextScope<TResult>(TDataContext dataContext, Func<TDataContext, TResult> logic)
 		{
 			var dc = dataContext ?? StaticNewDataContext();
 
 			try
 			{
+				if (dc.Connection.State != ConnectionState.Open) dc.Connection.Open();
 				var result = logic.Invoke(dc);
-				if (submitChanges) dc.SubmitChanges();
+				dc.SubmitChanges();
 				return result;
 			}
 			finally
@@ -40,18 +41,54 @@ namespace Kay.DataAccess
 			}
 		}
 
+		private static DbCommand CreateCommand(TDataContext dataContext, string query, object parameters)
+		{
+			var command = dataContext.Connection.CreateCommand();
+
+			command.CommandText = query;
+			
+			if (dataContext.Transaction != null)
+			{
+				command.Transaction = dataContext.Transaction;
+			}
+
+			if (parameters != null)
+			{
+				if (parameters is DbParameter[] arrayParameters)
+				{
+					command.Parameters.AddRange(arrayParameters);
+				}
+				else if (parameters is Dictionary<string, object> dictionaryParameters)
+				{
+					foreach (var keyValuePair in dictionaryParameters)
+					{
+						var parameter = command.CreateParameter();
+						parameter.ParameterName = keyValuePair.Key;
+						parameter.Value = keyValuePair.Value;
+						command.Parameters.Add(parameter);
+					}
+				}
+				else
+				{
+					throw new Exception("Unknown type of 'parameters' => '" + parameters.GetType() + "'");
+				}
+			}
+			
+			return command;
+		}
+
 		public TDataContext NewDataContext() => StaticNewDataContext();
 
 		public IEnumerable ExecuteQuery(Type elementType, string query, TDataContext dataContext = null, params object[] parameters)
 		{
 			FailIf(string.IsNullOrWhiteSpace(query), "Parameter 'query' is required");
-			return DataContextScope(false, dataContext, dc => dc.ExecuteQuery(elementType, query, parameters));
+			return DataContextScope(dataContext, dc => dc.ExecuteQuery(elementType, query, parameters));
 		}
 
 		public IEnumerable<TResult> ExecuteQuery<TResult>(string query, TDataContext dataContext = null, params object[] parameters)
 		{
 			FailIf(string.IsNullOrWhiteSpace(query), "Parameter 'query' is required");
-			return DataContextScope(false, dataContext, dc => dc.ExecuteQuery<TResult>(query, parameters));
+			return DataContextScope(dataContext, dc => dc.ExecuteQuery<TResult>(query, parameters));
 		}
 
 		public DataTable ExecuteDataTable(string query, TDataContext dataContext = null, Dictionary<string, object> parameters = null)
@@ -60,25 +97,11 @@ namespace Kay.DataAccess
 
 			var result = new DataTable();
 
-			return DataContextScope(false, dataContext, dc =>
+			return DataContextScope(dataContext, dc =>
 			{
-				if (dc.Connection.State != ConnectionState.Open) dc.Connection.Open();
-
-				using (var command = dc.Connection.CreateCommand())
+				using (var command = CreateCommand(dc, query, parameters))
 				using (var dataAdapter = DbProviderFactories.GetFactory(dc.Connection).CreateDataAdapter())
 				{
-					if (parameters != null)
-					{
-						foreach (var keyValuePair in parameters)
-						{
-							var parameter = command.CreateParameter();
-							parameter.ParameterName = keyValuePair.Key;
-							parameter.Value = keyValuePair.Value;
-							command.Parameters.Add(parameter);
-						}
-					}
-
-					command.CommandText = query;
 					dataAdapter.SelectCommand = command;
 					dataAdapter.Fill(result);
 				}
@@ -91,14 +114,10 @@ namespace Kay.DataAccess
 		{
 			FailIf(string.IsNullOrWhiteSpace(query), "Parameter 'query' is required");
 
-			return DataContextScope(false, dataContext, dc =>
+			return DataContextScope(dataContext, dc =>
 			{
-				if (dc.Connection.State != ConnectionState.Open) dc.Connection.Open();
-
-				using (var command = dc.Connection.CreateCommand())
+				using (var command = CreateCommand(dc, query, parameters))
 				{
-					if (parameters != null) command.Parameters.AddRange(parameters);
-					command.CommandText = query;
 					return command.ExecuteReader();
 				}
 			});
@@ -108,14 +127,10 @@ namespace Kay.DataAccess
 		{
 			FailIf(string.IsNullOrWhiteSpace(query), "Parameter 'query' is required");
 
-			return DataContextScope(false, dataContext, dc =>
+			return DataContextScope(dataContext, dc =>
 			{
-				if (dc.Connection.State != ConnectionState.Open) dc.Connection.Open();
-
-				using (var command = dc.Connection.CreateCommand())
+				using (var command = CreateCommand(dc, query, parameters))
 				{
-					if (parameters != null) command.Parameters.AddRange(parameters);
-					command.CommandText = query;
 					return (T)command.ExecuteScalar();
 				}
 			});
@@ -125,14 +140,10 @@ namespace Kay.DataAccess
 		{
 			FailIf(string.IsNullOrWhiteSpace(query), "Parameter 'query' is required");
 
-			return DataContextScope(true, dataContext, dc =>
+			return DataContextScope(dataContext, dc =>
 			{
-				if (dc.Connection.State != ConnectionState.Open) dc.Connection.Open();
-
-				using (var command = dc.Connection.CreateCommand())
+				using (var command = CreateCommand(dc, query, parameters))
 				{
-					if (parameters != null) command.Parameters.AddRange(parameters);
-					command.CommandText = query;
 					return command.ExecuteNonQuery();
 				}
 			});
@@ -142,16 +153,11 @@ namespace Kay.DataAccess
 		{
 			FailIf(string.IsNullOrWhiteSpace(query), "Parameter 'query' is required");
 
-			return DataContextScope(false, dataContext, dc =>
+			return DataContextScope(dataContext, dc =>
 			{
-				if (dc.Connection.State != ConnectionState.Open) dc.Connection.Open();
-				
-				using (var command = dc.Connection.CreateCommand())
+				using (var command = CreateCommand(dc, query, parameters))
 				using (var dataAdapter = DbProviderFactories.GetFactory(dc.Connection).CreateDataAdapter())
 				{
-					if (parameters != null) command.Parameters.AddRange(parameters);
-					command.CommandText = query;
-
 					var dataSet = new DataSet();
 					dataAdapter.SelectCommand = command;
 					dataAdapter.Fill(dataSet);
